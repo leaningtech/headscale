@@ -769,7 +769,7 @@ func (h *Headscale) toNode(
 
 		LastSeen:          machine.LastSeen,
 		Online:            &online,
-		KeepAlive:         true,
+		KeepAlive:         false,
 		MachineAuthorized: !machine.isExpired(),
 
 		Capabilities: []string{
