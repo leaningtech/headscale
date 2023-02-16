@@ -220,6 +220,13 @@ func (h *Headscale) handlePollCommon(
 		Inc()
 	updateChan <- struct{}{}
 
+	h.updateChansMutex.Lock()
+	for _, u := range h.updateChans {
+		u <- struct{}{}
+	}
+	h.updateChans = append(h.updateChans, updateChan)
+	h.updateChansMutex.Unlock()
+
 	h.pollNetMapStream(
 		writer,
 		ctx,
@@ -631,11 +638,22 @@ func (h *Headscale) scheduledPollWorker(
 	keepAliveTicker := time.NewTicker(keepAliveInterval)
 	updateCheckerTicker := time.NewTicker(h.cfg.NodeUpdateCheckInterval)
 
-	defer closeChanWithLog(
-		updateChan,
-		fmt.Sprint(ctx.Value(machineNameContextKey)),
-		"updateChan",
-	)
+	defer func() {
+		h.updateChansMutex.Lock()
+		for i, u := range h.updateChans {
+			if u == updateChan {
+				h.updateChans[i] = h.updateChans[len(h.updateChans)-1]
+				h.updateChans = h.updateChans[:len(h.updateChans)-1]
+			}
+		}
+		h.updateChansMutex.Unlock()
+
+		closeChanWithLog(
+			updateChan,
+			fmt.Sprint(ctx.Value(machineNameContextKey)),
+			"updateChan",
+		)
+	}()
 	defer closeChanWithLog(
 		keepAliveChan,
 		fmt.Sprint(ctx.Value(machineNameContextKey)),

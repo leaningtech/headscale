@@ -97,6 +97,10 @@ type Headscale struct {
 
 	ipAllocationMutex sync.Mutex
 
+	updateChansMutex sync.Mutex
+	updateChans []chan struct{}
+
+
 	shutdownChan       chan struct{}
 	pollNetMapStreamWG sync.WaitGroup
 }
