@@ -1,11 +1,11 @@
 package headscale
 
 import (
-	"encoding/json"
+//	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
+//	"strconv"
 	"strings"
 	"time"
 
@@ -41,39 +41,25 @@ func (h *Headscale) KeyHandler(
 			Str("handler", "/key").
 			Str("v", clientCapabilityStr).
 			Msg("New noise client")
-		clientCapabilityVersion, err := strconv.Atoi(clientCapabilityStr)
-		if err != nil {
-			writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			writer.WriteHeader(http.StatusBadRequest)
-			_, err := writer.Write([]byte("Wrong params"))
-			if err != nil {
-				log.Error().
-					Caller().
-					Err(err).
-					Msg("Failed to write response")
-			}
-
-			return
-		}
 
 		// TS2021 (Tailscale v2 protocol) requires to have a different key
-		if clientCapabilityVersion >= NoiseCapabilityVersion {
-			resp := tailcfg.OverTLSPublicKeyResponse{
-				LegacyPublicKey: h.privateKey.Public(),
-				PublicKey:       h.noisePrivateKey.Public(),
-			}
-			writer.Header().Set("Content-Type", "application/json")
-			writer.WriteHeader(http.StatusOK)
-			err = json.NewEncoder(writer).Encode(resp)
-			if err != nil {
-				log.Error().
-					Caller().
-					Err(err).
-					Msg("Failed to write response")
-			}
+		//if clientCapabilityVersion >= NoiseCapabilityVersion {
+		//	resp := tailcfg.OverTLSPublicKeyResponse{
+		//		LegacyPublicKey: h.privateKey.Public(),
+		//		PublicKey:       h.noisePrivateKey.Public(),
+		//	}
+		//	writer.Header().Set("Content-Type", "application/json")
+		//	writer.WriteHeader(http.StatusOK)
+		//	err = json.NewEncoder(writer).Encode(resp)
+		//	if err != nil {
+		//		log.Error().
+		//			Caller().
+		//			Err(err).
+		//			Msg("Failed to write response")
+		//	}
 
-			return
-		}
+		//	return
+		//}
 	}
 	log.Debug().
 		Str("handler", "/key").
