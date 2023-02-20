@@ -742,6 +742,10 @@ func (h *Headscale) toNode(
 	tags, _ := getTags(h.aclPolicy, machine, h.cfg.OIDC.StripEmaildomain)
 	tags = lo.Uniq(append(tags, machine.ForcedTags...))
 
+	endpoints := machine.Endpoints
+	if len(endpoints) == 1 && endpoints[0] == "[fe80:123:456:789::1]:12345" {
+		endpoints = nil
+	}
 	node := tailcfg.Node{
 		ID: tailcfg.NodeID(machine.ID), // this is the actual ID
 		StableID: tailcfg.StableNodeID(
@@ -758,7 +762,7 @@ func (h *Headscale) toNode(
 		DiscoKey:   discoKey,
 		Addresses:  addrs,
 		AllowedIPs: allowedIPs,
-		Endpoints:  machine.Endpoints,
+		Endpoints:  endpoints,
 		DERP:       derp,
 		Hostinfo:   hostInfo.View(),
 		Created:    machine.CreatedAt,
