@@ -326,12 +326,14 @@ func validateServerConfig() error {
 	depr.fatalIfNewKeyIsNotUsed("dns.nameservers.split", "dns_config.restricted_nameservers")
 	depr.fatalIfNewKeyIsNotUsed("dns.search_domains", "dns_config.domains")
 	depr.fatalIfNewKeyIsNotUsed("dns.extra_records", "dns_config.extra_records")
-	depr.fatal("dns.use_username_in_magic_dns")
-	depr.fatal("dns_config.use_username_in_magic_dns")
+	depr.warn("dns_config.use_username_in_magic_dns")
+	depr.warn("dns.use_username_in_magic_dns")
 
 	// TODO(kradalby): Reintroduce when strip_email_domain is removed
 	// after #2170 is cleaned up
 	// depr.fatal("oidc.strip_email_domain")
+	depr.fatal("dns.use_username_in_musername_in_magic_dns")
+	depr.fatal("dns_config.use_username_in_musername_in_magic_dns")
 
 	depr.Log()
 
@@ -339,8 +341,7 @@ func validateServerConfig() error {
 		// TODO(kradalby): Reintroduce when strip_email_domain is removed
 		// after #2170 is cleaned up
 		// "oidc.strip_email_domain",
-		"dns.use_username_in_magic_dns",
-		"dns_config.use_username_in_magic_dns",
+		"dns_config.use_username_in_musername_in_magic_dns",
 	} {
 		if viper.IsSet(removed) {
 			log.Fatal().
