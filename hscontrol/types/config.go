@@ -63,6 +63,8 @@ type Config struct {
 	Log                            LogConfig
 	DisableUpdateCheck             bool
 
+	AccessControlAllowOrigins string
+
 	Database DatabaseConfig
 
 	DERP DERPConfig
@@ -72,7 +74,14 @@ type Config struct {
 	ACMEURL   string
 	ACMEEmail string
 
-	DNSConfig *tailcfg.DNSConfig
+	// DNSConfig is the headscale representation of the DNS configuration.
+	// It is kept in the config update for some settings that are
+	// not directly converted into a tailcfg.DNSConfig.
+	DNSConfig DNSConfig
+
+	// TailcfgDNSConfig is the tailcfg representation of the DNS configuration,
+	// it can be used directly when sending Netmaps to clients.
+	TailcfgDNSConfig *tailcfg.DNSConfig
 
 	UnixSocket           string
 	UnixSocketPermission fs.FileMode
@@ -90,11 +99,12 @@ type Config struct {
 }
 
 type DNSConfig struct {
-	MagicDNS      bool   `mapstructure:"magic_dns"`
-	BaseDomain    string `mapstructure:"base_domain"`
-	Nameservers   Nameservers
-	SearchDomains []string            `mapstructure:"search_domains"`
-	ExtraRecords  []tailcfg.DNSRecord `mapstructure:"extra_records"`
+	MagicDNS         bool   `mapstructure:"magic_dns"`
+	BaseDomain       string `mapstructure:"base_domain"`
+	Nameservers      Nameservers
+	SearchDomains    []string            `mapstructure:"search_domains"`
+	ExtraRecords     []tailcfg.DNSRecord `mapstructure:"extra_records"`
+	ExtraRecordsPath string              `mapstructure:"extra_records_path"`
 }
 
 type Nameservers struct {
@@ -203,6 +213,10 @@ type PolicyConfig struct {
 	Mode PolicyMode
 }
 
+func (p *PolicyConfig) IsEmpty() bool {
+	return p.Mode == PolicyModeFile && p.Path == ""
+}
+
 type LogConfig struct {
 	Format string
 	Level  zerolog.Level
@@ -253,7 +267,6 @@ func LoadConfig(path string, isFile bool) error {
 	viper.SetDefault("dns.nameservers.global", []string{})
 	viper.SetDefault("dns.nameservers.split", map[string]string{})
 	viper.SetDefault("dns.search_domains", []string{})
-	viper.SetDefault("dns.extra_records", []tailcfg.DNSRecord{})
 
 	viper.SetDefault("derp.server.enabled", false)
 	viper.SetDefault("derp.server.stun.enabled", true)
@@ -291,6 +304,8 @@ func LoadConfig(path string, isFile bool) error {
 	viper.SetDefault("tuning.notifier_send_timeout", "800ms")
 	viper.SetDefault("tuning.batch_change_delay", "800ms")
 	viper.SetDefault("tuning.node_mapsession_buffered_chan_size", 30)
+
+	viper.SetDefault("access_control_allow_origin", "")
 
 	viper.SetDefault("prefixes.allocation", string(IPAllocationStrategySequential))
 
@@ -342,6 +357,10 @@ func validateServerConfig() error {
 			log.Fatal().
 				Msgf("Fatal config error: %s has been removed. Please remove it from your config file", removed)
 		}
+	}
+
+	if viper.IsSet("dns.extra_records") && viper.IsSet("dns.extra_records_path") {
+		log.Fatal().Msg("Fatal config error: dns.extra_records and dns.extra_records_path are mutually exclusive. Please remove one of them from your config file")
 	}
 
 	// Collect any validation errors and return them all at once
@@ -586,6 +605,7 @@ func dns() (DNSConfig, error) {
 	dns.Nameservers.Global = viper.GetStringSlice("dns.nameservers.global")
 	dns.Nameservers.Split = viper.GetStringMapStringSlice("dns.nameservers.split")
 	dns.SearchDomains = viper.GetStringSlice("dns.search_domains")
+	dns.ExtraRecordsPath = viper.GetString("dns.extra_records_path")
 
 	if viper.IsSet("dns.extra_records") {
 		var extraRecords []tailcfg.DNSRecord
@@ -852,6 +872,8 @@ func LoadServerConfig() (*Config, error) {
 		GRPCAllowInsecure:  viper.GetBool("grpc_allow_insecure"),
 		DisableUpdateCheck: false,
 
+		AccessControlAllowOrigins: viper.GetString("access_control_allow_origin"),
+
 		PrefixV4:     prefix4,
 		PrefixV6:     prefix6,
 		IPAllocation: IPAllocationStrategy(alloc),
@@ -871,7 +893,8 @@ func LoadServerConfig() (*Config, error) {
 
 		TLS: tlsConfig(),
 
-		DNSConfig: dnsToTailcfgDNS(dnsConfig),
+		DNSConfig:        dnsConfig,
+		TailcfgDNSConfig: dnsToTailcfgDNS(dnsConfig),
 
 		ACMEEmail: viper.GetString("acme_email"),
 		ACMEURL:   viper.GetString("acme_url"),
