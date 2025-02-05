@@ -24,9 +24,11 @@ import (
 	grpcRuntime "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/juanfont/headscale"
 	v1 "github.com/juanfont/headscale/gen/go/headscale/v1"
+	"github.com/juanfont/headscale/hscontrol/capver"
 	"github.com/juanfont/headscale/hscontrol/db"
 	"github.com/juanfont/headscale/hscontrol/derp"
 	derpServer "github.com/juanfont/headscale/hscontrol/derp/server"
+	"github.com/juanfont/headscale/hscontrol/dns"
 	"github.com/juanfont/headscale/hscontrol/mapper"
 	"github.com/juanfont/headscale/hscontrol/notifier"
 	"github.com/juanfont/headscale/hscontrol/policy"
@@ -88,13 +90,14 @@ type Headscale struct {
 	DERPMap    *tailcfg.DERPMap
 	DERPServer *derpServer.DERPServer
 
-	polManOnce sync.Once
-	polMan     policy.PolicyManager
+	polManOnce     sync.Once
+	polMan         policy.PolicyManager
+	extraRecordMan *dns.ExtraRecordsMan
 
 	mapper       *mapper.Mapper
 	nodeNotifier *notifier.Notifier
 
-	registrationCache *zcache.Cache[string, types.Node]
+	registrationCache *zcache.Cache[types.RegistrationID, types.RegisterNode]
 
 	authProvider AuthProvider
 
@@ -121,7 +124,7 @@ func NewHeadscale(cfg *types.Config) (*Headscale, error) {
 		return nil, fmt.Errorf("failed to read or create Noise protocol private key: %w", err)
 	}
 
-	registrationCache := zcache.New[string, types.Node](
+	registrationCache := zcache.New[types.RegistrationID, types.RegisterNode](
 		registerCacheExpiration,
 		registerCacheCleanup,
 	)
@@ -184,7 +187,7 @@ func NewHeadscale(cfg *types.Config) (*Headscale, error) {
 	}
 	app.authProvider = authProvider
 
-	if app.cfg.DNSConfig != nil && app.cfg.DNSConfig.Proxied { // if MagicDNS
+	if app.cfg.TailcfgDNSConfig != nil && app.cfg.TailcfgDNSConfig.Proxied { // if MagicDNS
 		// TODO(kradalby): revisit why this takes a list.
 
 		var magicDNSDomains []dnsname.FQDN
@@ -196,11 +199,11 @@ func NewHeadscale(cfg *types.Config) (*Headscale, error) {
 		}
 
 		// we might have routes already from Split DNS
-		if app.cfg.DNSConfig.Routes == nil {
-			app.cfg.DNSConfig.Routes = make(map[string][]*dnstype.Resolver)
+		if app.cfg.TailcfgDNSConfig.Routes == nil {
+			app.cfg.TailcfgDNSConfig.Routes = make(map[string][]*dnstype.Resolver)
 		}
 		for _, d := range magicDNSDomains {
-			app.cfg.DNSConfig.Routes[d.WithoutTrailingDot()] = nil
+			app.cfg.TailcfgDNSConfig.Routes[d.WithoutTrailingDot()] = nil
 		}
 	}
 
@@ -237,23 +240,38 @@ func (h *Headscale) redirect(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, target, http.StatusFound)
 }
 
-// expireExpiredNodes expires nodes that have an explicit expiry set
-// after that expiry time has passed.
-func (h *Headscale) expireExpiredNodes(ctx context.Context, every time.Duration) {
-	ticker := time.NewTicker(every)
+func (h *Headscale) scheduledTasks(ctx context.Context) {
+	expireTicker := time.NewTicker(updateInterval)
+	defer expireTicker.Stop()
 
-	lastCheck := time.Unix(0, 0)
-	var update types.StateUpdate
-	var changed bool
+	lastExpiryCheck := time.Unix(0, 0)
+
+	derpTickerChan := make(<-chan time.Time)
+	if h.cfg.DERP.AutoUpdate && h.cfg.DERP.UpdateFrequency != 0 {
+		derpTicker := time.NewTicker(h.cfg.DERP.UpdateFrequency)
+		defer derpTicker.Stop()
+		derpTickerChan = derpTicker.C
+	}
+
+	var extraRecordsUpdate <-chan []tailcfg.DNSRecord
+	if h.extraRecordMan != nil {
+		extraRecordsUpdate = h.extraRecordMan.UpdateCh()
+	} else {
+		extraRecordsUpdate = make(chan []tailcfg.DNSRecord)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			ticker.Stop()
+			log.Info().Caller().Msg("scheduled task worker is shutting down.")
 			return
-		case <-ticker.C:
+
+		case <-expireTicker.C:
+			var update types.StateUpdate
+			var changed bool
+
 			if err := h.db.Write(func(tx *gorm.DB) error {
-				lastCheck, update, changed = db.ExpireExpiredNodes(tx, lastCheck)
+				lastExpiryCheck, update, changed = db.ExpireExpiredNodes(tx, lastExpiryCheck)
 
 				return nil
 			}); err != nil {
@@ -267,24 +285,8 @@ func (h *Headscale) expireExpiredNodes(ctx context.Context, every time.Duration)
 				ctx := types.NotifyCtx(context.Background(), "expire-expired", "na")
 				h.nodeNotifier.NotifyAll(ctx, update)
 			}
-		}
-	}
-}
 
-// scheduledDERPMapUpdateWorker refreshes the DERPMap stored on the global object
-// at a set interval.
-func (h *Headscale) scheduledDERPMapUpdateWorker(cancelChan <-chan struct{}) {
-	log.Info().
-		Dur("frequency", h.cfg.DERP.UpdateFrequency).
-		Msg("Setting up a DERPMap update worker")
-	ticker := time.NewTicker(h.cfg.DERP.UpdateFrequency)
-
-	for {
-		select {
-		case <-cancelChan:
-			return
-
-		case <-ticker.C:
+		case <-derpTickerChan:
 			log.Info().Msg("Fetching DERPMap updates")
 			h.DERPMap = derp.GetDERPMap(h.cfg.DERP)
 			if h.cfg.DERP.ServerEnabled && h.cfg.DERP.AutomaticallyAddEmbeddedDerpRegion {
@@ -296,6 +298,19 @@ func (h *Headscale) scheduledDERPMapUpdateWorker(cancelChan <-chan struct{}) {
 			h.nodeNotifier.NotifyAll(ctx, types.StateUpdate{
 				Type:    types.StateDERPUpdated,
 				DERPMap: h.DERPMap,
+			})
+
+		case records, ok := <-extraRecordsUpdate:
+			if !ok {
+				continue
+			}
+			h.cfg.TailcfgDNSConfig.ExtraRecords = records
+
+			ctx := types.NotifyCtx(context.Background(), "dns-extrarecord", "all")
+			h.nodeNotifier.NotifyAll(ctx, types.StateUpdate{
+				// TODO(kradalby): We can probably do better than sending a full update here,
+				// but for now this will ensure that all of the nodes get the new records.
+				Type: types.StateFullUpdate,
 			})
 		}
 	}
@@ -440,15 +455,71 @@ func (h *Headscale) ensureUnixSocketIsAbsent() error {
 	return os.Remove(h.cfg.UnixSocket)
 }
 
+// corsHeaderMiddleware will add an "Access-Control-Allow-Origin" to enable CORS.
+func (h *Headscale) corsHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// skip disabled CORS endpoints
+		if !h.enabledCorsRoutes(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		origin := r.Header.Get("Origin")
+		// we compare origin from the allowed Origins list. Then add the header with origin
+		for _, allowedOrigin := range h.cfg.AllowedOrigins.Origins {
+			if allowedOrigin == origin {
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+				break
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Headscale) enabledCorsRoutes(routerPath string) bool {
+	// enable all api endpoints
+	if strings.HasPrefix(routerPath, "/api/") {
+		return true
+	}
+
+	// A list of enabled CORS endpoints
+	enabledRoutes := []string{
+		"/health",
+		"/key",
+		"/register/{registration_id}",
+		"/oidc/callback",
+		"/verify",
+		"/derp",
+		"/derp/probe",
+		"/derp/latency-check",
+		"/bootstrap-dns",
+		"/machine/register",
+		"/machine/map",
+	}
+
+	for _, routes := range enabledRoutes {
+		if routes == routerPath {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (h *Headscale) createRouter(grpcMux *grpcRuntime.ServeMux) *mux.Router {
 	router := mux.NewRouter()
 	router.Use(prometheusMiddleware)
+
+	if len(h.cfg.AllowedOrigins.Origins) != 0 {
+		router.Use(h.corsHeadersMiddleware)
+	}
 
 	router.HandleFunc(ts2021UpgradePath, h.NoiseUpgradeHandler).Methods(http.MethodPost, http.MethodGet)
 
 	router.HandleFunc("/health", h.HealthHandler).Methods(http.MethodGet)
 	router.HandleFunc("/key", h.KeyHandler).Methods(http.MethodGet)
-	router.HandleFunc("/register/{mkey}", h.authProvider.RegisterHandler).Methods(http.MethodGet)
+	router.HandleFunc("/register/{registration_id}", h.authProvider.RegisterHandler).Methods(http.MethodGet)
 
 	if provider, ok := h.authProvider.(*AuthProviderOIDC); ok {
 		router.HandleFunc("/oidc/callback", provider.OIDCCallbackHandler).Methods(http.MethodGet)
@@ -546,6 +617,11 @@ func (h *Headscale) Serve() error {
 		spew.Dump(h.cfg)
 	}
 
+	log.Info().
+		Caller().
+		Str("minimum_version", capver.TailscaleVersion(MinimumCapVersion)).
+		Msg("Clients with a lower minimum version will be rejected")
+
 	// Fetch an initial DERP Map before we start serving
 	h.DERPMap = derp.GetDERPMap(h.cfg.DERP)
 	h.mapper = mapper.NewMapper(h.db, h.cfg, h.DERPMap, h.nodeNotifier, h.polMan)
@@ -568,12 +644,6 @@ func (h *Headscale) Serve() error {
 		go h.DERPServer.ServeSTUN()
 	}
 
-	if h.cfg.DERP.AutoUpdate {
-		derpMapCancelChannel := make(chan struct{})
-		defer func() { derpMapCancelChannel <- struct{}{} }()
-		go h.scheduledDERPMapUpdateWorker(derpMapCancelChannel)
-	}
-
 	if len(h.DERPMap.Regions) == 0 {
 		return errEmptyInitialDERPMap
 	}
@@ -591,9 +661,21 @@ func (h *Headscale) Serve() error {
 		h.ephemeralGC.Schedule(node.ID, h.cfg.EphemeralNodeInactivityTimeout)
 	}
 
-	expireNodeCtx, expireNodeCancel := context.WithCancel(context.Background())
-	defer expireNodeCancel()
-	go h.expireExpiredNodes(expireNodeCtx, updateInterval)
+	if h.cfg.DNSConfig.ExtraRecordsPath != "" {
+		h.extraRecordMan, err = dns.NewExtraRecordsManager(h.cfg.DNSConfig.ExtraRecordsPath)
+		if err != nil {
+			return fmt.Errorf("setting up extrarecord manager: %w", err)
+		}
+		h.cfg.TailcfgDNSConfig.ExtraRecords = h.extraRecordMan.Records()
+		go h.extraRecordMan.Run()
+		defer h.extraRecordMan.Close()
+	}
+
+	// Start all scheduled tasks, e.g. expiring nodes, derp updates and
+	// records updates
+	scheduleCtx, scheduleCancel := context.WithCancel(context.Background())
+	defer scheduleCancel()
+	go h.scheduledTasks(scheduleCtx)
 
 	if zl.GlobalLevel() == zl.TraceLevel {
 		zerolog.RespLog = true
@@ -818,6 +900,10 @@ func (h *Headscale) Serve() error {
 					Str("signal", sig.String()).
 					Msg("Received SIGHUP, reloading ACL and Config")
 
+				if h.cfg.Policy.IsEmpty() {
+					continue
+				}
+
 				if err := h.loadPolicyManager(); err != nil {
 					log.Error().Err(err).Msg("failed to reload Policy")
 				}
@@ -847,7 +933,7 @@ func (h *Headscale) Serve() error {
 					Str("signal", sig.String()).
 					Msg("Received signal to stop, shutting down gracefully")
 
-				expireNodeCancel()
+				scheduleCancel()
 				h.ephemeralGC.Close()
 
 				// Gracefully shut down servers
@@ -1080,6 +1166,10 @@ func (h *Headscale) policyBytes() ([]byte, error) {
 			}
 
 			return nil, err
+		}
+
+		if p.Data == "" {
+			return nil, nil
 		}
 
 		return []byte(p.Data), err

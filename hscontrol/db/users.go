@@ -15,21 +15,18 @@ var (
 	ErrUserStillHasNodes = errors.New("user not empty: node(s) found")
 )
 
-func (hsdb *HSDatabase) CreateUser(name string) (*types.User, error) {
+func (hsdb *HSDatabase) CreateUser(user types.User) (*types.User, error) {
 	return Write(hsdb.DB, func(tx *gorm.DB) (*types.User, error) {
-		return CreateUser(tx, name)
+		return CreateUser(tx, user)
 	})
 }
 
 // CreateUser creates a new User. Returns error if could not be created
 // or another user already exists.
-func CreateUser(tx *gorm.DB, name string) (*types.User, error) {
-	err := util.CheckForFQDNRules(name)
+func CreateUser(tx *gorm.DB, user types.User) (*types.User, error) {
+	err := util.ValidateUsername(user.Name)
 	if err != nil {
 		return nil, err
-	}
-	user := types.User{
-		Name: name,
 	}
 	if err := tx.Create(&user).Error; err != nil {
 		return nil, fmt.Errorf("creating user: %w", err)
@@ -92,7 +89,7 @@ func RenameUser(tx *gorm.DB, uid types.UserID, newName string) error {
 	if err != nil {
 		return err
 	}
-	err = util.CheckForFQDNRules(newName)
+	err = util.ValidateUsername(newName)
 	if err != nil {
 		return err
 	}

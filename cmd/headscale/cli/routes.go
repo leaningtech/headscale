@@ -25,21 +25,21 @@ func init() {
 	enableRouteCmd.Flags().Uint64P("route", "r", 0, "Route identifier (ID)")
 	err := enableRouteCmd.MarkFlagRequired("route")
 	if err != nil {
-		log.Fatalf(err.Error())
+		log.Fatal(err.Error())
 	}
 	routesCmd.AddCommand(enableRouteCmd)
 
 	disableRouteCmd.Flags().Uint64P("route", "r", 0, "Route identifier (ID)")
 	err = disableRouteCmd.MarkFlagRequired("route")
 	if err != nil {
-		log.Fatalf(err.Error())
+		log.Fatal(err.Error())
 	}
 	routesCmd.AddCommand(disableRouteCmd)
 
 	deleteRouteCmd.Flags().Uint64P("route", "r", 0, "Route identifier (ID)")
 	err = deleteRouteCmd.MarkFlagRequired("route")
 	if err != nil {
-		log.Fatalf(err.Error())
+		log.Fatal(err.Error())
 	}
 	routesCmd.AddCommand(deleteRouteCmd)
 }
@@ -251,10 +251,15 @@ func routesToPtables(routes []*v1.Route) pterm.TableData {
 			isPrimaryStr = strconv.FormatBool(route.GetIsPrimary())
 		}
 
+		var nodeName string
+		if route.GetNode() != nil {
+			nodeName = route.GetNode().GetGivenName()
+		}
+
 		tableData = append(tableData,
 			[]string{
 				strconv.FormatUint(route.GetId(), Base10),
-				route.GetNode().GetGivenName(),
+				nodeName,
 				route.GetPrefix(),
 				strconv.FormatBool(route.GetAdvertised()),
 				strconv.FormatBool(route.GetEnabled()),

@@ -22,7 +22,7 @@ build:
 dev: lint test build
 
 test:
-	gotestsum -- -short -coverprofile=coverage.out ./...
+	gotestsum -- -short -race -coverprofile=coverage.out ./...
 
 test_integration:
 	docker run \
@@ -33,7 +33,7 @@ test_integration:
 		-v /var/run/docker.sock:/var/run/docker.sock \
 		-v $$PWD/control_logs:/tmp/control \
 		golang:1 \
-		go run gotest.tools/gotestsum@latest -- -failfast ./... -timeout 120m -parallel 8
+		go run gotest.tools/gotestsum@latest -- -race -failfast ./... -timeout 120m -parallel 8
 
 lint:
 	golangci-lint run --fix --timeout 10m
@@ -42,9 +42,13 @@ fmt: fmt-go fmt-prettier fmt-proto
 
 fmt-prettier:
 	prettier --write '**/**.{ts,js,md,yaml,yml,sass,css,scss,html}'
+	prettier --write --print-width 80 --prose-wrap always CHANGELOG.md
 
 fmt-go:
-	golines --max-len=88 --base-formatter=gofumpt -w $(GO_SOURCES)
+	# TODO(kradalby): Reeval if we want to use 88 in the future.
+	# golines --max-len=88 --base-formatter=gofumpt -w $(GO_SOURCES)
+	gofumpt -l -w .
+	golangci-lint run --fix
 
 fmt-proto:
 	clang-format -i $(PROTO_SOURCES)

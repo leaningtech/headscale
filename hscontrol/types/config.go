@@ -26,11 +26,14 @@ import (
 const (
 	defaultOIDCExpiryTime               = 180 * 24 * time.Hour // 180 Days
 	maxDuration           time.Duration = 1<<63 - 1
+	PKCEMethodPlain       string        = "plain"
+	PKCEMethodS256        string        = "S256"
 )
 
 var (
 	errOidcMutuallyExclusive = errors.New("oidc_client_secret and oidc_client_secret_path are mutually exclusive")
 	errServerURLSuffix       = errors.New("server_url cannot be part of base_domain in a way that could make the DERP and headscale server unreachable")
+	errInvalidPKCEMethod     = errors.New("pkce.method must be either 'plain' or 'S256'")
 )
 
 type IPAllocationStrategy string
@@ -63,6 +66,8 @@ type Config struct {
 	Log                            LogConfig
 	DisableUpdateCheck             bool
 
+	AllowedOrigins CorsConfig
+
 	Database DatabaseConfig
 
 	DERP DERPConfig
@@ -72,7 +77,14 @@ type Config struct {
 	ACMEURL   string
 	ACMEEmail string
 
-	DNSConfig *tailcfg.DNSConfig
+	// DNSConfig is the headscale representation of the DNS configuration.
+	// It is kept in the config update for some settings that are
+	// not directly converted into a tailcfg.DNSConfig.
+	DNSConfig DNSConfig
+
+	// TailcfgDNSConfig is the tailcfg representation of the DNS configuration,
+	// it can be used directly when sending Netmaps to clients.
+	TailcfgDNSConfig *tailcfg.DNSConfig
 
 	UnixSocket           string
 	UnixSocketPermission fs.FileMode
@@ -90,11 +102,12 @@ type Config struct {
 }
 
 type DNSConfig struct {
-	MagicDNS      bool   `mapstructure:"magic_dns"`
-	BaseDomain    string `mapstructure:"base_domain"`
-	Nameservers   Nameservers
-	SearchDomains []string            `mapstructure:"search_domains"`
-	ExtraRecords  []tailcfg.DNSRecord `mapstructure:"extra_records"`
+	MagicDNS         bool   `mapstructure:"magic_dns"`
+	BaseDomain       string `mapstructure:"base_domain"`
+	Nameservers      Nameservers
+	SearchDomains    []string            `mapstructure:"search_domains"`
+	ExtraRecords     []tailcfg.DNSRecord `mapstructure:"extra_records"`
+	ExtraRecordsPath string              `mapstructure:"extra_records_path"`
 }
 
 type Nameservers struct {
@@ -154,6 +167,11 @@ type LetsEncryptConfig struct {
 	ChallengeType string
 }
 
+type PKCEConfig struct {
+	Enabled bool
+	Method  string
+}
+
 type OIDCConfig struct {
 	OnlyStartIfOIDCIsAvailable bool
 	Issuer                     string
@@ -168,6 +186,7 @@ type OIDCConfig struct {
 	Expiry                     time.Duration
 	UseExpiryFromToken         bool
 	MapLegacyUsers             bool
+	PKCE                       PKCEConfig
 }
 
 type DERPConfig struct {
@@ -191,6 +210,10 @@ type LogTailConfig struct {
 	Enabled bool
 }
 
+type CorsConfig struct {
+	Origins []string
+}
+
 type CLIConfig struct {
 	Address  string
 	APIKey   string
@@ -203,6 +226,10 @@ type PolicyConfig struct {
 	Mode PolicyMode
 }
 
+func (p *PolicyConfig) IsEmpty() bool {
+	return p.Mode == PolicyModeFile && p.Path == ""
+}
+
 type LogConfig struct {
 	Format string
 	Level  zerolog.Level
@@ -212,6 +239,24 @@ type Tuning struct {
 	NotifierSendTimeout            time.Duration
 	BatchChangeDelay               time.Duration
 	NodeMapSessionBufferedChanSize int
+}
+
+func validatePKCEMethod(method string) error {
+	if method != PKCEMethodPlain && method != PKCEMethodS256 {
+		return errInvalidPKCEMethod
+	}
+	return nil
+}
+
+// Domain returns the hostname/domain part of the ServerURL.
+// If the ServerURL is not a valid URL, it returns the BaseDomain.
+func (c *Config) Domain() string {
+	u, err := url.Parse(c.ServerURL)
+	if err != nil {
+		return c.BaseDomain
+	}
+
+	return u.Hostname()
 }
 
 // LoadConfig prepares and loads the Headscale configuration into Viper.
@@ -253,7 +298,6 @@ func LoadConfig(path string, isFile bool) error {
 	viper.SetDefault("dns.nameservers.global", []string{})
 	viper.SetDefault("dns.nameservers.split", map[string]string{})
 	viper.SetDefault("dns.search_domains", []string{})
-	viper.SetDefault("dns.extra_records", []tailcfg.DNSRecord{})
 
 	viper.SetDefault("derp.server.enabled", false)
 	viper.SetDefault("derp.server.stun.enabled", true)
@@ -281,7 +325,9 @@ func LoadConfig(path string, isFile bool) error {
 	viper.SetDefault("oidc.only_start_if_oidc_is_available", true)
 	viper.SetDefault("oidc.expiry", "180d")
 	viper.SetDefault("oidc.use_expiry_from_token", false)
-	viper.SetDefault("oidc.map_legacy_users", true)
+	viper.SetDefault("oidc.map_legacy_users", false)
+	viper.SetDefault("oidc.pkce.enabled", false)
+	viper.SetDefault("oidc.pkce.method", "S256")
 
 	viper.SetDefault("logtail.enabled", false)
 	viper.SetDefault("randomize_client_port", false)
@@ -291,6 +337,8 @@ func LoadConfig(path string, isFile bool) error {
 	viper.SetDefault("tuning.notifier_send_timeout", "800ms")
 	viper.SetDefault("tuning.batch_change_delay", "800ms")
 	viper.SetDefault("tuning.node_mapsession_buffered_chan_size", 30)
+
+	viper.SetDefault("access_control_allow_origin", "")
 
 	viper.SetDefault("prefixes.allocation", string(IPAllocationStrategySequential))
 
@@ -329,6 +377,12 @@ func validateServerConfig() error {
 	// after #2170 is cleaned up
 	// depr.fatal("oidc.strip_email_domain")
 
+	if viper.GetBool("oidc.enabled") {
+		if err := validatePKCEMethod(viper.GetString("oidc.pkce.method")); err != nil {
+			return err
+		}
+	}
+
 	depr.Log()
 
 	for _, removed := range []string{
@@ -342,6 +396,10 @@ func validateServerConfig() error {
 			log.Fatal().
 				Msgf("Fatal config error: %s has been removed. Please remove it from your config file", removed)
 		}
+	}
+
+	if viper.IsSet("dns.extra_records") && viper.IsSet("dns.extra_records_path") {
+		log.Fatal().Msg("Fatal config error: dns.extra_records and dns.extra_records_path are mutually exclusive. Please remove one of them from your config file")
 	}
 
 	// Collect any validation errors and return them all at once
@@ -480,6 +538,14 @@ func logtailConfig() LogTailConfig {
 	}
 }
 
+func corsConfig() CorsConfig {
+	allowedOrigins := viper.GetStringSlice("cors.allowed_origins")
+
+	return CorsConfig{
+		Origins: allowedOrigins,
+	}
+}
+
 func policyConfig() PolicyConfig {
 	policyPath := viper.GetString("policy.path")
 	policyMode := viper.GetString("policy.mode")
@@ -578,7 +644,7 @@ func dns() (DNSConfig, error) {
 	// UnmarshalKey is compatible with Environment Variables.
 	// err := viper.UnmarshalKey("dns", &dns)
 	// if err != nil {
-	// 	return DNSConfig{}, fmt.Errorf("unmarshaling dns config: %w", err)
+	// 	return DNSConfig{}, fmt.Errorf("unmarshalling dns config: %w", err)
 	// }
 
 	dns.MagicDNS = viper.GetBool("dns.magic_dns")
@@ -586,13 +652,14 @@ func dns() (DNSConfig, error) {
 	dns.Nameservers.Global = viper.GetStringSlice("dns.nameservers.global")
 	dns.Nameservers.Split = viper.GetStringMapStringSlice("dns.nameservers.split")
 	dns.SearchDomains = viper.GetStringSlice("dns.search_domains")
+	dns.ExtraRecordsPath = viper.GetString("dns.extra_records_path")
 
 	if viper.IsSet("dns.extra_records") {
 		var extraRecords []tailcfg.DNSRecord
 
 		err := viper.UnmarshalKey("dns.extra_records", &extraRecords)
 		if err != nil {
-			return DNSConfig{}, fmt.Errorf("unmarshaling dns extra records: %w", err)
+			return DNSConfig{}, fmt.Errorf("unmarshalling dns extra records: %w", err)
 		}
 		dns.ExtraRecords = extraRecords
 	}
@@ -852,6 +919,8 @@ func LoadServerConfig() (*Config, error) {
 		GRPCAllowInsecure:  viper.GetBool("grpc_allow_insecure"),
 		DisableUpdateCheck: false,
 
+		AllowedOrigins: corsConfig(),
+
 		PrefixV4:     prefix4,
 		PrefixV6:     prefix6,
 		IPAllocation: IPAllocationStrategy(alloc),
@@ -871,7 +940,8 @@ func LoadServerConfig() (*Config, error) {
 
 		TLS: tlsConfig(),
 
-		DNSConfig: dnsToTailcfgDNS(dnsConfig),
+		DNSConfig:        dnsConfig,
+		TailcfgDNSConfig: dnsToTailcfgDNS(dnsConfig),
 
 		ACMEEmail: viper.GetString("acme_email"),
 		ACMEURL:   viper.GetString("acme_url"),
@@ -911,6 +981,10 @@ func LoadServerConfig() (*Config, error) {
 			// after #2170 is cleaned up
 			StripEmaildomain: viper.GetBool("oidc.strip_email_domain"),
 			MapLegacyUsers:   viper.GetBool("oidc.map_legacy_users"),
+			PKCE: PKCEConfig{
+				Enabled: viper.GetBool("oidc.pkce.enabled"),
+				Method:  viper.GetString("oidc.pkce.method"),
+			},
 		},
 
 		LogTail:             logTailConfig,

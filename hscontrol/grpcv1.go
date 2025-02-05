@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/puzpuzpuz/xsync/v3"
 	"github.com/rs/zerolog/log"
+	"github.com/samber/lo"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -21,6 +23,7 @@ import (
 
 	v1 "github.com/juanfont/headscale/gen/go/headscale/v1"
 	"github.com/juanfont/headscale/hscontrol/db"
+	"github.com/juanfont/headscale/hscontrol/policy"
 	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/juanfont/headscale/hscontrol/util"
 )
@@ -40,7 +43,13 @@ func (api headscaleV1APIServer) CreateUser(
 	ctx context.Context,
 	request *v1.CreateUserRequest,
 ) (*v1.CreateUserResponse, error) {
-	user, err := api.h.db.CreateUser(request.GetName())
+	newUser := types.User{
+		Name:          request.GetName(),
+		DisplayName:   request.GetDisplayName(),
+		Email:         request.GetEmail(),
+		ProfilePicURL: request.GetPictureUrl(),
+	}
+	user, err := api.h.db.CreateUser(newUser)
 	if err != nil {
 		return nil, err
 	}
@@ -218,11 +227,10 @@ func (api headscaleV1APIServer) RegisterNode(
 ) (*v1.RegisterNodeResponse, error) {
 	log.Trace().
 		Str("user", request.GetUser()).
-		Str("machine_key", request.GetKey()).
+		Str("registration_id", request.GetKey()).
 		Msg("Registering node")
 
-	var mkey key.MachinePublic
-	err := mkey.UnmarshalText([]byte(request.GetKey()))
+	registrationId, err := types.RegistrationIDFromString(request.GetKey())
 	if err != nil {
 		return nil, err
 	}
@@ -237,8 +245,8 @@ func (api headscaleV1APIServer) RegisterNode(
 		return nil, fmt.Errorf("looking up user: %w", err)
 	}
 
-	node, err := api.h.db.RegisterNodeFromAuthCallback(
-		mkey,
+	node, _, err := api.h.db.HandleNodeFromAuthPath(
+		registrationId,
 		types.UserID(user.ID),
 		nil,
 		util.RegisterMethodCLI,
@@ -457,19 +465,7 @@ func (api headscaleV1APIServer) ListNodes(
 			return nil, err
 		}
 
-		response := make([]*v1.Node, len(nodes))
-		for index, node := range nodes {
-			resp := node.Proto()
-
-			// Populate the online field based on
-			// currently connected nodes.
-			if val, ok := isLikelyConnected.Load(node.ID); ok && val {
-				resp.Online = true
-			}
-
-			response[index] = resp
-		}
-
+		response := nodesToProto(api.h.polMan, isLikelyConnected, nodes)
 		return &v1.ListNodesResponse{Nodes: response}, nil
 	}
 
@@ -482,6 +478,11 @@ func (api headscaleV1APIServer) ListNodes(
 		return nodes[i].ID < nodes[j].ID
 	})
 
+	response := nodesToProto(api.h.polMan, isLikelyConnected, nodes)
+	return &v1.ListNodesResponse{Nodes: response}, nil
+}
+
+func nodesToProto(polMan policy.PolicyManager, isLikelyConnected *xsync.MapOf[types.NodeID, bool], nodes types.Nodes) []*v1.Node {
 	response := make([]*v1.Node, len(nodes))
 	for index, node := range nodes {
 		resp := node.Proto()
@@ -492,12 +493,12 @@ func (api headscaleV1APIServer) ListNodes(
 			resp.Online = true
 		}
 
-		validTags := api.h.polMan.Tags(node)
-		resp.ValidTags = validTags
+		tags := polMan.Tags(node)
+		resp.ValidTags = lo.Uniq(append(tags, node.ForcedTags...))
 		response[index] = resp
 	}
 
-	return &v1.ListNodesResponse{Nodes: response}, nil
+	return response
 }
 
 func (api headscaleV1APIServer) MoveNode(
@@ -837,36 +838,36 @@ func (api headscaleV1APIServer) DebugCreateNode(
 		Hostname:    "DebugTestNode",
 	}
 
-	var mkey key.MachinePublic
-	err = mkey.UnmarshalText([]byte(request.GetKey()))
+	registrationId, err := types.RegistrationIDFromString(request.GetKey())
 	if err != nil {
 		return nil, err
 	}
 
-	nodeKey := key.NewNode()
+	newNode := types.RegisterNode{
+		Node: types.Node{
+			NodeKey:    key.NewNode().Public(),
+			MachineKey: key.NewMachine().Public(),
+			Hostname:   request.GetName(),
+			User:       *user,
 
-	newNode := types.Node{
-		MachineKey: mkey,
-		NodeKey:    nodeKey.Public(),
-		Hostname:   request.GetName(),
-		User:       *user,
+			Expiry:   &time.Time{},
+			LastSeen: &time.Time{},
 
-		Expiry:   &time.Time{},
-		LastSeen: &time.Time{},
-
-		Hostinfo: &hostinfo,
+			Hostinfo: &hostinfo,
+		},
+		Registered: make(chan struct{}),
 	}
 
 	log.Debug().
-		Str("machine_key", mkey.ShortString()).
+		Str("registration_id", registrationId.String()).
 		Msg("adding debug machine via CLI, appending to registration cache")
 
 	api.h.registrationCache.Set(
-		mkey.String(),
+		registrationId,
 		newNode,
 	)
 
-	return &v1.DebugCreateNodeResponse{Node: newNode.Proto()}, nil
+	return &v1.DebugCreateNodeResponse{Node: newNode.Node.Proto()}, nil
 }
 
 func (api headscaleV1APIServer) mustEmbedUnimplementedHeadscaleServiceServer() {}

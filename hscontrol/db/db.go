@@ -41,7 +41,7 @@ type KV struct {
 type HSDatabase struct {
 	DB       *gorm.DB
 	cfg      *types.DatabaseConfig
-	regCache *zcache.Cache[string, types.Node]
+	regCache *zcache.Cache[types.RegistrationID, types.RegisterNode]
 
 	baseDomain string
 }
@@ -51,7 +51,7 @@ type HSDatabase struct {
 func NewHeadscaleDatabase(
 	cfg types.DatabaseConfig,
 	baseDomain string,
-	regCache *zcache.Cache[string, types.Node],
+	regCache *zcache.Cache[types.RegistrationID, types.RegisterNode],
 ) (*HSDatabase, error) {
 	dbConn, err := openDB(cfg)
 	if err != nil {
@@ -478,6 +478,38 @@ func NewHeadscaleDatabase(
 				// populate the user with more interesting information.
 				ID: "202407191627",
 				Migrate: func(tx *gorm.DB) error {
+					// Fix an issue where the automigration in GORM expected a constraint to
+					// exists that didnt, and add the one it wanted.
+					// Fixes https://github.com/juanfont/headscale/issues/2351
+					if cfg.Type == types.DatabasePostgres {
+						err := tx.Exec(`
+BEGIN;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uni_users_name'
+    ) THEN
+        ALTER TABLE users ADD CONSTRAINT uni_users_name UNIQUE (name);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'users_name_key'
+    ) THEN
+        ALTER TABLE users DROP CONSTRAINT users_name_key;
+    END IF;
+END $$;
+COMMIT;
+`).Error
+						if err != nil {
+							return fmt.Errorf("failed to rename constraint: %w", err)
+						}
+					}
+
 					err := tx.AutoMigrate(&types.User{})
 					if err != nil {
 						return err
@@ -515,6 +547,35 @@ func NewHeadscaleDatabase(
 						if err != nil {
 							return fmt.Errorf("creating username index: %w", err)
 						}
+					}
+
+					return nil
+				},
+				Rollback: func(db *gorm.DB) error { return nil },
+			},
+			{
+				// Add a constraint to routes ensuring they cannot exist without a node.
+				ID: "202501221827",
+				Migrate: func(tx *gorm.DB) error {
+					// Remove any invalid routes associated with a node that does not exist.
+					if tx.Migrator().HasTable(&types.Route{}) && tx.Migrator().HasTable(&types.Node{}) {
+						err := tx.Exec("delete from routes where node_id not in (select id from nodes)").Error
+						if err != nil {
+							return err
+						}
+					}
+
+					// Remove any invalid routes without a node_id.
+					if tx.Migrator().HasTable(&types.Route{}) {
+						err := tx.Exec("delete from routes where node_id is null").Error
+						if err != nil {
+							return err
+						}
+					}
+
+					err := tx.AutoMigrate(&types.Route{})
+					if err != nil {
+						return err
 					}
 
 					return nil

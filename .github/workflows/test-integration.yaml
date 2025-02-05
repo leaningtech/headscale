@@ -25,6 +25,7 @@ jobs:
           - TestOIDCAuthenticationPingAll
           - TestOIDCExpireNodesBasedOnTokenExpiry
           - TestOIDC024UserCreation
+          - TestOIDCAuthenticationWithPKCE
           - TestAuthWebFlowAuthenticationPingAll
           - TestAuthWebFlowLogoutAndRelogin
           - TestUserCommand
@@ -43,6 +44,7 @@ jobs:
           - TestPolicyBrokenConfigCommand
           - TestDERPVerifyEndpoint
           - TestResolveMagicDNS
+          - TestResolveMagicDNSExtraRecordsPath
           - TestValidateResolvConf
           - TestDERPServerScenario
           - TestDERPServerWebsocketScenario

@@ -40,6 +40,16 @@ grpc_listen_addr: 127.0.0.1:50443
 # are doing.
 grpc_allow_insecure: false
 
+# The allow_origins list will allow you to set the Access-Control-Allow-Origin header to the origin in the list.
+# This will allow you to enable cors and set headscale without a reverse proxy.
+# Multiple origins can be set in the allow_origins list.
+# Options:
+# - "*" is disabled (due to security risks).
+# - "https://example.com" to only allow access from a specific origin.
+# - "https://example.com:1234" to allow access from a specific origin with a port.
+cors:
+  allow_origins: []
+
 # The Noise section includes specific configuration for the
 # TS2021 Noise protocol
 noise:
@@ -58,8 +68,8 @@ noise:
 # IPv4: https://github.com/tailscale/tailscale/blob/22ebb25e833264f58d7c3f534a8b166894a89536/net/tsaddr/tsaddr.go#L33
 # Any other range is NOT supported, and it will cause unexpected issues.
 prefixes:
-  v6: fd7a:115c:a1e0::/48
   v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
 
   # Strategy used for allocation of IPs to nodes, available options:
   # - sequential (default): assigns the next free IP from the previous given IP.
@@ -301,7 +311,7 @@ dns:
   search_domains: []
 
   # Extra DNS records
-  # so far only A-records are supported (on the tailscale side)
+  # so far only A and AAAA records are supported (on the tailscale side)
   # See: docs/ref/dns.md
   extra_records: []
   #   - name: "grafana.myvpn.example.com"
@@ -310,6 +320,10 @@ dns:
   #
   #   # you can also put it in one line
   #   - { name: "prometheus.myvpn.example.com", type: "A", value: "100.64.0.3" }
+  #
+  # Alternatively, extra DNS records can be loaded from a JSON file.
+  # Headscale processes this file on each change.
+  # extra_records_path: /var/lib/headscale/extra-records.json
 
 # Unix socket used for the CLI to connect without authentication
 # Note: for production you will want to set this to something like:
@@ -360,18 +374,30 @@ unix_socket_permission: "0770"
 #   allowed_users:
 #     - alice@example.com
 #
+#   # Optional: PKCE (Proof Key for Code Exchange) configuration
+#   # PKCE adds an additional layer of security to the OAuth 2.0 authorization code flow
+#   # by preventing authorization code interception attacks
+#   # See https://datatracker.ietf.org/doc/html/rfc7636
+#   pkce:
+#     # Enable or disable PKCE support (default: false)
+#     enabled: false
+#     # PKCE method to use:
+#     # - plain: Use plain code verifier
+#     # - S256: Use SHA256 hashed code verifier (default, recommended)
+#     method: S256
+#
 #   # Map legacy users from pre-0.24.0 versions of headscale to the new OIDC users
 #   # by taking the username from the legacy user and matching it with the username
 #   # provided by the OIDC. This is useful when migrating from legacy users to OIDC
 #   # to force them using the unique identifier from the OIDC and to give them a
 #   # proper display name and picture if available.
 #   # Note that this will only work if the username from the legacy user is the same
-#   # and ther is a posibility for account takeover should a username have changed
+#   # and there is a possibility for account takeover should a username have changed
 #   # with the provider.
-#   # Disabling this feature will cause all new logins to be created as new users.
+#   # When this feature is disabled, it will cause all new logins to be created as new users.
 #   # Note this option will be removed in the future and should be set to false
 #   # on all new installations, or when all users have logged in with OIDC once.
-#   map_legacy_users: true
+#   map_legacy_users: false
 
 # Logtail configuration
 # Logtail is Tailscales logging and auditing infrastructure, it allows the control panel

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -23,7 +24,10 @@ import (
 	"zgo.at/zcache/v2"
 )
 
-func TestMigrations(t *testing.T) {
+// TestMigrationsSQLite is the main function for testing migrations,
+// we focus on SQLite correctness as it is the main database used in headscale.
+// All migrations that are worth testing should be added here.
+func TestMigrationsSQLite(t *testing.T) {
 	ipp := func(p string) netip.Prefix {
 		return netip.MustParsePrefix(p)
 	}
@@ -256,8 +260,8 @@ func testCopyOfDatabase(src string) (string, error) {
 	return dst, err
 }
 
-func emptyCache() *zcache.Cache[string, types.Node] {
-	return zcache.New[string, types.Node](time.Minute, time.Hour)
+func emptyCache() *zcache.Cache[types.RegistrationID, types.RegisterNode] {
+	return zcache.New[types.RegistrationID, types.RegisterNode](time.Minute, time.Hour)
 }
 
 // requireConstraintFailed checks if the error is a constraint failure with
@@ -278,9 +282,9 @@ func TestConstraints(t *testing.T) {
 		{
 			name: "no-duplicate-username-if-no-oidc",
 			run: func(t *testing.T, db *gorm.DB) {
-				_, err := CreateUser(db, "user1")
+				_, err := CreateUser(db, types.User{Name: "user1"})
 				require.NoError(t, err)
-				_, err = CreateUser(db, "user1")
+				_, err = CreateUser(db, types.User{Name: "user1"})
 				requireConstraintFailed(t, err)
 			},
 		},
@@ -331,7 +335,7 @@ func TestConstraints(t *testing.T) {
 		{
 			name: "allow-duplicate-username-cli-then-oidc",
 			run: func(t *testing.T, db *gorm.DB) {
-				_, err := CreateUser(db, "user1") // Create CLI username
+				_, err := CreateUser(db, types.User{Name: "user1"}) // Create CLI username
 				require.NoError(t, err)
 
 				user := types.User{
@@ -354,7 +358,7 @@ func TestConstraints(t *testing.T) {
 				err := db.Save(&user).Error
 				require.NoError(t, err)
 
-				_, err = CreateUser(db, "user1") // Create CLI username
+				_, err = CreateUser(db, types.User{Name: "user1"}) // Create CLI username
 				require.NoError(t, err)
 			},
 		},
@@ -373,6 +377,60 @@ func TestConstraints(t *testing.T) {
 
 			tt.run(t, db.DB.Debug())
 		})
+	}
+}
 
+func TestMigrationsPostgres(t *testing.T) {
+	tests := []struct {
+		name     string
+		dbPath   string
+		wantFunc func(*testing.T, *HSDatabase)
+	}{
+		{
+			name:   "user-idx-breaking",
+			dbPath: "testdata/pre-24-postgresdb.pssql.dump",
+			wantFunc: func(t *testing.T, h *HSDatabase) {
+				users, err := Read(h.DB, func(rx *gorm.DB) ([]types.User, error) {
+					return ListUsers(rx)
+				})
+				require.NoError(t, err)
+
+				for _, user := range users {
+					assert.NotEmpty(t, user.Name)
+					assert.Empty(t, user.ProfilePicURL)
+					assert.Empty(t, user.Email)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := newPostgresDBForTest(t)
+
+			pgRestorePath, err := exec.LookPath("pg_restore")
+			if err != nil {
+				t.Fatal("pg_restore not found in PATH. Please install it and ensure it is accessible.")
+			}
+
+			// Construct the pg_restore command
+			cmd := exec.Command(pgRestorePath, "--verbose", "--if-exists", "--clean", "--no-owner", "--dbname", u.String(), tt.dbPath)
+
+			// Set the output streams
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+
+			// Execute the command
+			err = cmd.Run()
+			if err != nil {
+				t.Fatalf("failed to restore postgres database: %s", err)
+			}
+
+			db = newHeadscaleDBFromPostgresURL(t, u)
+
+			if tt.wantFunc != nil {
+				tt.wantFunc(t, db)
+			}
+		})
 	}
 }

@@ -11,7 +11,7 @@ Known limitations:
 
 In your `config.yaml`, customize this to your liking:
 
-```yaml
+```yaml title="config.yaml"
 oidc:
   # Block further startup until the OIDC provider is healthy and available
   only_start_if_oidc_is_available: true
@@ -45,6 +45,18 @@ oidc:
   allowed_users:
     - alice@example.com
 
+  # Optional: PKCE (Proof Key for Code Exchange) configuration
+  # PKCE adds an additional layer of security to the OAuth 2.0 authorization code flow
+  # by preventing authorization code interception attacks
+  # See https://datatracker.ietf.org/doc/html/rfc7636
+  pkce:
+    # Enable or disable PKCE support (default: false)
+    enabled: false
+    # PKCE method to use:
+    # - plain: Use plain code verifier
+    # - S256: Use SHA256 hashed code verifier (default, recommended)
+    method: S256
+
   # If `strip_email_domain` is set to `true`, the domain part of the username email address will be removed.
   # This will transform `first-name.last-name@example.com` to the user `first-name.last-name`
   # If `strip_email_domain` is set to `false` the domain part will NOT be removed resulting to the following
@@ -56,7 +68,7 @@ oidc:
 
 In order to integrate headscale with Azure Active Directory, we'll need to provision an App Registration with the correct scopes and redirect URI. Here with Terraform:
 
-```hcl
+```hcl title="terraform.hcl"
 resource "azuread_application" "headscale" {
   display_name = "Headscale"
 
@@ -127,7 +139,7 @@ output "headscale_client_secret" {
 
 And in your headscale `config.yaml`:
 
-```yaml
+```yaml title="config.yaml"
 oidc:
   issuer: "https://login.microsoftonline.com/<tenant-UUID>/v2.0"
   client_id: "<client-id-from-terraform>"
@@ -162,7 +174,7 @@ However if you don't have a domain, or need to add users outside of your domain,
 8. Click `Save` at the bottom of the form
 9. Take note of the `Client ID` and `Client secret`, you can also download it for reference if you need it.
 10. Edit your headscale config, under `oidc`, filling in your `client_id` and `client_secret`:
-    ```yaml
+    ```yaml title="config.yaml"
     oidc:
       issuer: "https://accounts.google.com"
       client_id: ""

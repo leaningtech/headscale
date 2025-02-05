@@ -12,6 +12,7 @@ import (
 	"time"
 
 	v1 "github.com/juanfont/headscale/gen/go/headscale/v1"
+	"github.com/juanfont/headscale/hscontrol/capver"
 	"github.com/juanfont/headscale/hscontrol/util"
 	"github.com/juanfont/headscale/integration/dockertestutil"
 	"github.com/juanfont/headscale/integration/dsic"
@@ -51,53 +52,6 @@ var (
 	errNoUserAvailable      = errors.New("no user available")
 	errNoClientFound        = errors.New("client not found")
 
-	// Tailscale started adding TS2021 support in CapabilityVersion>=28 (v1.24.0), but
-	// proper support in Headscale was only added for CapabilityVersion>=39 clients (v1.30.0).
-	tailscaleVersions2021 = map[string]bool{
-		"head":     true,
-		"unstable": true,
-		"1.74":     true,  // CapVer: 106
-		"1.72":     true,  // CapVer: 104
-		"1.70":     true,  // CapVer: 102
-		"1.68":     true,  // CapVer: 97
-		"1.66":     true,  // CapVer: 95
-		"1.64":     true,  // CapVer: 90
-		"1.62":     true,  // CapVer: 88
-		"1.60":     true,  // CapVer: 87
-		"1.58":     true,  // CapVer: 85
-		"1.56":     true,  // Oldest supported version, CapVer: 82
-		"1.54":     false, // CapVer: 79
-		"1.52":     false, // CapVer: 79
-		"1.50":     false, // CapVer: 74
-		"1.48":     false, // CapVer: 68
-		"1.46":     false, // CapVer: 65
-		"1.44":     false, // CapVer: 63
-		"1.42":     false, // CapVer: 61
-		"1.40":     false, // CapVer: 61
-		"1.38":     false, // CapVer: 58
-		"1.36":     false, // CapVer: 56
-		"1.34":     false, // CapVer: 51
-		"1.32":     false, // CapVer: 46
-		"1.30":     false,
-	}
-
-	tailscaleVersions2019 = map[string]bool{
-		"1.28": false,
-		"1.26": false,
-		"1.24": false, // Tailscale SSH
-		"1.22": false,
-		"1.20": false,
-		"1.18": false,
-	}
-
-	// tailscaleVersionsUnavailable = []string{
-	// 	// These versions seem to fail when fetching from apt.
-	// "1.14.6",
-	// "1.12.4",
-	// "1.10.2",
-	// "1.8.7",
-	// }.
-
 	// AllVersions represents a list of Tailscale versions the suite
 	// uses to test compatibility with the ControlServer.
 	//
@@ -107,10 +61,7 @@ var (
 	//
 	// The rest of the version represents Tailscale versions that can be
 	// found in Tailscale's apt repository.
-	AllVersions = append(
-		enabledVersions(tailscaleVersions2021),
-		enabledVersions(tailscaleVersions2019)...,
-	)
+	AllVersions = append([]string{"head", "unstable"}, capver.TailscaleLatestMajorMinor(10, true)...)
 
 	// MustTestVersions is the minimum set of versions we should test.
 	// At the moment, this is arbitrarily chosen as:
@@ -347,6 +298,51 @@ func (s *Scenario) CreateUser(user string) error {
 
 /// Client related stuff
 
+func (s *Scenario) CreateTailscaleNode(
+	version string,
+	opts ...tsic.Option,
+) (TailscaleClient, error) {
+	headscale, err := s.Headscale()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tailscale node (version: %s): %w", version, err)
+	}
+
+	cert := headscale.GetCert()
+	hostname := headscale.GetHostname()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	opts = append(opts,
+		tsic.WithCACert(cert),
+		tsic.WithHeadscaleName(hostname),
+	)
+
+	tsClient, err := tsic.New(
+		s.pool,
+		version,
+		s.network,
+		opts...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create tailscale (%s) node: %w",
+			tsClient.Hostname(),
+			err,
+		)
+	}
+
+	err = tsClient.WaitForNeedsLogin()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to wait for tailscaled (%s) to need login: %w",
+			tsClient.Hostname(),
+			err,
+		)
+	}
+
+	return tsClient, nil
+}
+
 // CreateTailscaleNodesInUser creates and adds a new TailscaleClient to a
 // User in the Scenario.
 func (s *Scenario) CreateTailscaleNodesInUser(
@@ -372,18 +368,22 @@ func (s *Scenario) CreateTailscaleNodesInUser(
 			cert := headscale.GetCert()
 			hostname := headscale.GetHostname()
 
+			s.mu.Lock()
 			opts = append(opts,
 				tsic.WithCACert(cert),
 				tsic.WithHeadscaleName(hostname),
 			)
+			s.mu.Unlock()
 
 			user.createWaitGroup.Go(func() error {
+				s.mu.Lock()
 				tsClient, err := tsic.New(
 					s.pool,
 					version,
 					s.network,
 					opts...,
 				)
+				s.mu.Unlock()
 				if err != nil {
 					return fmt.Errorf(
 						"failed to create tailscale (%s) node: %w",

@@ -10,7 +10,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strconv"
 	"testing"
@@ -54,7 +56,7 @@ func TestOIDCAuthenticationPingAll(t *testing.T) {
 	scenario := AuthOIDCScenario{
 		Scenario: baseScenario,
 	}
-	// defer scenario.ShutdownAssertNoPanics(t)
+	defer scenario.ShutdownAssertNoPanics(t)
 
 	// Logins to MockOIDC is served by a queue with a strict order,
 	// if we use more than one node per user, the order of the logins
@@ -89,7 +91,6 @@ func TestOIDCAuthenticationPingAll(t *testing.T) {
 		hsic.WithTestName("oidcauthping"),
 		hsic.WithConfigEnv(oidcMap),
 		hsic.WithTLS(),
-		hsic.WithHostnameAsServerURL(),
 		hsic.WithFileInContainer("/tmp/hs_client_oidc_secret", []byte(oidcConfig.ClientSecret)),
 	)
 	assertNoErrHeadscaleEnv(t, err)
@@ -130,8 +131,9 @@ func TestOIDCAuthenticationPingAll(t *testing.T) {
 
 	want := []v1.User{
 		{
-			Id:   1,
-			Name: "user1",
+			Id:    1,
+			Name:  "user1",
+			Email: "user1@test.no",
 		},
 		{
 			Id:         2,
@@ -141,8 +143,9 @@ func TestOIDCAuthenticationPingAll(t *testing.T) {
 			ProviderId: oidcConfig.Issuer + "/user1",
 		},
 		{
-			Id:   3,
-			Name: "user2",
+			Id:    3,
+			Name:  "user2",
+			Email: "user2@test.no",
 		},
 		{
 			Id:         4,
@@ -154,7 +157,7 @@ func TestOIDCAuthenticationPingAll(t *testing.T) {
 	}
 
 	sort.Slice(listUsers, func(i, j int) bool {
-		return listUsers[i].Id < listUsers[j].Id
+		return listUsers[i].GetId() < listUsers[j].GetId()
 	})
 
 	if diff := cmp.Diff(want, listUsers, cmpopts.IgnoreUnexported(v1.User{}), cmpopts.IgnoreFields(v1.User{}, "CreatedAt")); diff != "" {
@@ -202,7 +205,6 @@ func TestOIDCExpireNodesBasedOnTokenExpiry(t *testing.T) {
 		spec,
 		hsic.WithTestName("oidcexpirenodes"),
 		hsic.WithConfigEnv(oidcMap),
-		hsic.WithHostnameAsServerURL(),
 	)
 	assertNoErrHeadscaleEnv(t, err)
 
@@ -260,8 +262,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 			want: func(iss string) []v1.User {
 				return []v1.User{
 					{
-						Id:   1,
-						Name: "user1",
+						Id:    1,
+						Name:  "user1",
+						Email: "user1@test.no",
 					},
 					{
 						Id:         2,
@@ -271,8 +274,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 						ProviderId: iss + "/user1",
 					},
 					{
-						Id:   3,
-						Name: "user2",
+						Id:    3,
+						Name:  "user2",
+						Email: "user2@test.no",
 					},
 					{
 						Id:         4,
@@ -295,8 +299,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 			want: func(iss string) []v1.User {
 				return []v1.User{
 					{
-						Id:   1,
-						Name: "user1",
+						Id:    1,
+						Name:  "user1",
+						Email: "user1@test.no",
 					},
 					{
 						Id:         2,
@@ -305,8 +310,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 						ProviderId: iss + "/user1",
 					},
 					{
-						Id:   3,
-						Name: "user2",
+						Id:    3,
+						Name:  "user2",
+						Email: "user2@test.no",
 					},
 					{
 						Id:         4,
@@ -357,8 +363,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 			want: func(iss string) []v1.User {
 				return []v1.User{
 					{
-						Id:   1,
-						Name: "user1",
+						Id:    1,
+						Name:  "user1",
+						Email: "user1@test.no",
 					},
 					{
 						Id:         2,
@@ -367,8 +374,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 						ProviderId: iss + "/user1",
 					},
 					{
-						Id:   3,
-						Name: "user2",
+						Id:    3,
+						Name:  "user2",
+						Email: "user2@test.no",
 					},
 					{
 						Id:         4,
@@ -421,8 +429,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 			want: func(iss string) []v1.User {
 				return []v1.User{
 					{
-						Id:   1,
-						Name: "user1.headscale.net",
+						Id:    1,
+						Name:  "user1.headscale.net",
+						Email: "user1.headscale.net@test.no",
 					},
 					{
 						Id:         2,
@@ -431,8 +440,9 @@ func TestOIDC024UserCreation(t *testing.T) {
 						ProviderId: iss + "/user1",
 					},
 					{
-						Id:   3,
-						Name: "user2.headscale.net",
+						Id:    3,
+						Name:  "user2.headscale.net",
+						Email: "user2.headscale.net@test.no",
 					},
 					{
 						Id:         4,
@@ -485,7 +495,6 @@ func TestOIDC024UserCreation(t *testing.T) {
 				hsic.WithTestName("oidcmigration"),
 				hsic.WithConfigEnv(oidcMap),
 				hsic.WithTLS(),
-				hsic.WithHostnameAsServerURL(),
 				hsic.WithFileInContainer("/tmp/hs_client_oidc_secret", []byte(oidcConfig.ClientSecret)),
 			)
 			assertNoErrHeadscaleEnv(t, err)
@@ -514,7 +523,7 @@ func TestOIDC024UserCreation(t *testing.T) {
 			assertNoErr(t, err)
 
 			sort.Slice(listUsers, func(i, j int) bool {
-				return listUsers[i].Id < listUsers[j].Id
+				return listUsers[i].GetId() < listUsers[j].GetId()
 			})
 
 			if diff := cmp.Diff(want, listUsers, cmpopts.IgnoreUnexported(v1.User{}), cmpopts.IgnoreFields(v1.User{}, "CreatedAt")); diff != "" {
@@ -522,6 +531,85 @@ func TestOIDC024UserCreation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOIDCAuthenticationWithPKCE(t *testing.T) {
+	IntegrationSkip(t)
+	t.Parallel()
+
+	baseScenario, err := NewScenario(dockertestMaxWait())
+	assertNoErr(t, err)
+
+	scenario := AuthOIDCScenario{
+		Scenario: baseScenario,
+	}
+	defer scenario.ShutdownAssertNoPanics(t)
+
+	// Single user with one node for testing PKCE flow
+	spec := map[string]int{
+		"user1": 1,
+	}
+
+	mockusers := []mockoidc.MockUser{
+		oidcMockUser("user1", true),
+	}
+
+	oidcConfig, err := scenario.runMockOIDC(defaultAccessTTL, mockusers)
+	assertNoErrf(t, "failed to run mock OIDC server: %s", err)
+	defer scenario.mockOIDC.Close()
+
+	oidcMap := map[string]string{
+		"HEADSCALE_OIDC_ISSUER":             oidcConfig.Issuer,
+		"HEADSCALE_OIDC_CLIENT_ID":          oidcConfig.ClientID,
+		"HEADSCALE_OIDC_CLIENT_SECRET_PATH": "${CREDENTIALS_DIRECTORY_TEST}/hs_client_oidc_secret",
+		"CREDENTIALS_DIRECTORY_TEST":        "/tmp",
+		"HEADSCALE_OIDC_PKCE_ENABLED":       "1", // Enable PKCE
+		"HEADSCALE_OIDC_MAP_LEGACY_USERS":   "0",
+		"HEADSCALE_OIDC_STRIP_EMAIL_DOMAIN": "0",
+	}
+
+	err = scenario.CreateHeadscaleEnv(
+		spec,
+		hsic.WithTestName("oidcauthpkce"),
+		hsic.WithConfigEnv(oidcMap),
+		hsic.WithTLS(),
+		hsic.WithFileInContainer("/tmp/hs_client_oidc_secret", []byte(oidcConfig.ClientSecret)),
+	)
+	assertNoErrHeadscaleEnv(t, err)
+
+	// Get all clients and verify they can connect
+	allClients, err := scenario.ListTailscaleClients()
+	assertNoErrListClients(t, err)
+
+	allIps, err := scenario.ListTailscaleClientsIPs()
+	assertNoErrListClientIPs(t, err)
+
+	err = scenario.WaitForTailscaleSync()
+	assertNoErrSync(t, err)
+
+	// Verify PKCE was used in authentication
+	headscale, err := scenario.Headscale()
+	assertNoErr(t, err)
+
+	var listUsers []v1.User
+	err = executeAndUnmarshal(headscale,
+		[]string{
+			"headscale",
+			"users",
+			"list",
+			"--output",
+			"json",
+		},
+		&listUsers,
+	)
+	assertNoErr(t, err)
+
+	allAddrs := lo.Map(allIps, func(x netip.Addr, index int) string {
+		return x.String()
+	})
+
+	success := pingAllHelper(t, allClients, allAddrs)
+	t.Logf("%d successful pings out of %d", success, len(allClients)*len(allIps))
 }
 
 func (s *AuthOIDCScenario) CreateHeadscaleEnv(
@@ -657,71 +745,42 @@ func (s *AuthOIDCScenario) runMockOIDC(accessTTL time.Duration, users []mockoidc
 	}, nil
 }
 
+type LoggingRoundTripper struct{}
+
+func (t LoggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	noTls := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // nolint
+	}
+	resp, err := noTls.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("---")
+	log.Printf("method: %s | url: %s", resp.Request.Method, resp.Request.URL.String())
+	log.Printf("status: %d | cookies: %+v", resp.StatusCode, resp.Cookies())
+
+	return resp, nil
+}
+
 func (s *AuthOIDCScenario) runTailscaleUp(
 	userStr, loginServer string,
 ) error {
-	headscale, err := s.Headscale()
-	if err != nil {
-		return err
-	}
-
 	log.Printf("running tailscale up for user %s", userStr)
 	if user, ok := s.users[userStr]; ok {
 		for _, client := range user.Clients {
-			c := client
+			tsc := client
 			user.joinWaitGroup.Go(func() error {
-				loginURL, err := c.LoginWithURL(loginServer)
+				loginURL, err := tsc.LoginWithURL(loginServer)
 				if err != nil {
-					log.Printf("%s failed to run tailscale up: %s", c.Hostname(), err)
+					log.Printf("%s failed to run tailscale up: %s", tsc.Hostname(), err)
 				}
 
-				loginURL.Host = fmt.Sprintf("%s:8080", headscale.GetIP())
-				loginURL.Scheme = "http"
-
-				if len(headscale.GetCert()) > 0 {
-					loginURL.Scheme = "https"
-				}
-
-				insecureTransport := &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // nolint
-				}
-
-				log.Printf("%s login url: %s\n", c.Hostname(), loginURL.String())
-
-				log.Printf("%s logging in with url", c.Hostname())
-				httpClient := &http.Client{Transport: insecureTransport}
-				ctx := context.Background()
-				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, loginURL.String(), nil)
-				resp, err := httpClient.Do(req)
+				_, err = doLoginURL(tsc.Hostname(), loginURL)
 				if err != nil {
-					log.Printf(
-						"%s failed to login using url %s: %s",
-						c.Hostname(),
-						loginURL,
-						err,
-					)
-
 					return err
 				}
 
-				if resp.StatusCode != http.StatusOK {
-					log.Printf("%s response code of oidc login request was %s", c.Hostname(), resp.Status)
-					body, _ := io.ReadAll(resp.Body)
-					log.Printf("body: %s", body)
-
-					return errStatusCodeNotOK
-				}
-
-				defer resp.Body.Close()
-
-				_, err = io.ReadAll(resp.Body)
-				if err != nil {
-					log.Printf("%s failed to read response body: %s", c.Hostname(), err)
-
-					return err
-				}
-
-				log.Printf("Finished request for %s to join tailnet", c.Hostname())
 				return nil
 			})
 
@@ -747,6 +806,49 @@ func (s *AuthOIDCScenario) runTailscaleUp(
 	}
 
 	return fmt.Errorf("failed to up tailscale node: %w", errNoUserAvailable)
+}
+
+// doLoginURL visits the given login URL and returns the body as a
+// string.
+func doLoginURL(hostname string, loginURL *url.URL) (string, error) {
+	log.Printf("%s login url: %s\n", hostname, loginURL.String())
+
+	var err error
+	hc := &http.Client{
+		Transport: LoggingRoundTripper{},
+	}
+	hc.Jar, err = cookiejar.New(nil)
+	if err != nil {
+		return "", fmt.Errorf("%s failed to create cookiejar	: %w", hostname, err)
+	}
+
+	log.Printf("%s logging in with url", hostname)
+	ctx := context.Background()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, loginURL.String(), nil)
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%s failed to send http request: %w", hostname, err)
+	}
+
+	log.Printf("cookies: %+v", hc.Jar.Cookies(loginURL))
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("body: %s", body)
+
+		return "", fmt.Errorf("%s response code of login request was %w", hostname, err)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("%s failed to read response body: %s", hostname, err)
+
+		return "", fmt.Errorf("%s failed to read response body: %w", hostname, err)
+	}
+
+	return string(body), nil
 }
 
 func (s *AuthOIDCScenario) Shutdown() {

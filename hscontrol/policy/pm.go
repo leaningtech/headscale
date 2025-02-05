@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/juanfont/headscale/hscontrol/types"
+	"github.com/rs/zerolog/log"
 	"go4.org/netipx"
 	"tailscale.com/tailcfg"
 	"tailscale.com/util/deephash"
@@ -122,6 +123,10 @@ func (pm *PolicyManagerV1) SSHPolicy(node *types.Node) (*tailcfg.SSHPolicy, erro
 }
 
 func (pm *PolicyManagerV1) SetPolicy(polB []byte) (bool, error) {
+	if len(polB) == 0 {
+		return false, nil
+	}
+
 	pol, err := LoadACLPolicyFromBytes(polB)
 	if err != nil {
 		return false, fmt.Errorf("parsing policy: %w", err)
@@ -157,7 +162,8 @@ func (pm *PolicyManagerV1) Tags(node *types.Node) []string {
 		return nil
 	}
 
-	tags, _ := pm.pol.TagsOfNode(node)
+	tags, invalid := pm.pol.TagsOfNode(pm.users, node)
+	log.Debug().Strs("authorised_tags", tags).Strs("unauthorised_tags", invalid).Uint64("node.id", node.ID.Uint64()).Msg("tags provided by policy")
 	return tags
 }
 

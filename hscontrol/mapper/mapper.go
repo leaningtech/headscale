@@ -105,8 +105,7 @@ func generateUserProfiles(
 
 	var profiles []tailcfg.UserProfile
 	for _, user := range userMap {
-		profiles = append(profiles,
-			user.TailscaleUserProfile())
+		profiles = append(profiles, user.TailscaleUserProfile())
 	}
 
 	return profiles
@@ -116,11 +115,11 @@ func generateDNSConfig(
 	cfg *types.Config,
 	node *types.Node,
 ) *tailcfg.DNSConfig {
-	if cfg.DNSConfig == nil {
+	if cfg.TailcfgDNSConfig == nil {
 		return nil
 	}
 
-	dnsConfig := cfg.DNSConfig.Clone()
+	dnsConfig := cfg.TailcfgDNSConfig.Clone()
 
 	addNextDNSMetadata(dnsConfig.Resolvers, node)
 
@@ -455,7 +454,7 @@ func (m *Mapper) baseWithConfigMapResponse(
 
 	resp.DERPMap = m.derpMap
 
-	resp.Domain = m.cfg.BaseDomain
+	resp.Domain = m.cfg.Domain()
 
 	// Do not instruct clients to collect services we do not
 	// support or do anything with them
